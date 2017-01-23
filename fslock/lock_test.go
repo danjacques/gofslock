@@ -54,22 +54,15 @@ func TestConcurrent(t *testing.T) {
 		doneC := make(chan error, count)
 
 		// Individual test function, run per goroutine.
+		blocker := func() error {
+			time.Sleep(time.Millisecond)
+			return nil
+		}
 		doTest := func() error {
-			for {
-				switch l, err := LockFile(lock); err {
-				case nil:
-					defer l.Unlock()
-					value++
-					return nil
-
-				case ErrLockFailed:
-					// Sleep and try again.
-					time.Sleep(time.Millisecond)
-
-				default:
-					return fmt.Errorf("failed to acquire lock: %v\n", err)
-				}
-			}
+			return WithBlocking(lock, blocker, func() error {
+				value++
+				return nil
+			})
 		}
 
 		for i := 0; i < count; i++ {
@@ -272,36 +265,34 @@ func testMultiProcessingSubprocess(lock, out string, respW io.Writer, signalR io
 		return 2
 	}
 
-	for {
-		switch l, err := LockFile(lock); err {
-		case nil:
-			defer l.Unlock()
-
-			// We hold the lock. Update our "out" file value by reading/writing  a new
-			// number.
-			d, err := ioutil.ReadFile(out)
-			if err != nil {
-				fmt.Printf("failed to read output file: %v\n", err)
-				return 4
-			}
-			v, err := strconv.Atoi(string(d))
-			if err != nil {
-				fmt.Printf("invalid number value (%s): %v\n", d, err)
-				return 5
-			}
-			if err := ioutil.WriteFile(out, []byte(strconv.Itoa(v+1)), 0664); err != nil {
-				fmt.Printf("failed to write updated value: %v\n", err)
-				return 6
-			}
-			return 0
-
-		case ErrLockFailed:
-			// Sleep and try again.
-			time.Sleep(time.Millisecond)
-
-		default:
-			fmt.Printf("failed to acquire lock: %v\n", err)
-			return 3
-		}
+	blocker := func() error {
+		time.Sleep(time.Millisecond)
+		return nil
 	}
+
+	var rc byte = 255
+	err := WithBlocking(lock, blocker, func() error {
+		// We hold the lock. Update our "out" file value by reading/writing  a new
+		// number.
+		d, err := ioutil.ReadFile(out)
+		if err != nil {
+			rc = 4
+			return fmt.Errorf("failed to read output file: %v\n", err)
+		}
+		v, err := strconv.Atoi(string(d))
+		if err != nil {
+			rc = 5
+			return fmt.Errorf("invalid number value (%s): %v\n", d, err)
+		}
+		if err := ioutil.WriteFile(out, []byte(strconv.Itoa(v+1)), 0664); err != nil {
+			rc = 6
+			return fmt.Errorf("failed to write updated value: %v\n", err)
+		}
+		return nil
+	})
+	if err != nil {
+		fmt.Println(err.Error())
+		return rc
+	}
+	return 0
 }

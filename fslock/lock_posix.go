@@ -15,15 +15,15 @@ import (
 
 var globalPosixLockState posixLockState
 
-// lockFileImpl is an implementation of lock using POSIX locks via flock().
+// lockImpl is an implementation of lock using POSIX locks via flock().
 //
 // flock() locks are released when *any* file handle to the locked file is
 // closed. To address this, we hold actual file handles globally. Attempts to
 // acquire a file lock first check to see if there is already a global entity
 // holding the lock (fail), then attempt to acquire the lock at a filesystem
 // level.
-func lockFileImpl(path string) (Lock, error) {
-	return globalPosixLockState.lockFileImpl(path)
+func lockImpl(l *L) (Handle, error) {
+	return globalPosixLockState.lockImpl(l)
 }
 
 // posixLockState maintains an internal state of filesystem locks.
@@ -35,8 +35,8 @@ type posixLockState struct {
 	held map[uint64]*os.File
 }
 
-func (pls *posixLockState) lockFileImpl(path string) (Lock, error) {
-	fd, err := getOrCreateLockFile(path)
+func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
+	fd, err := getOrCreateLockFile(l.Path, l.Content)
 	if err != nil {
 		return nil, err
 	}
@@ -60,7 +60,7 @@ func (pls *posixLockState) lockFileImpl(path string) (Lock, error) {
 
 	if has != nil {
 		// Some other code path within our process already holds the lock.
-		return nil, ErrLockFailed
+		return nil, ErrLockHeld
 	}
 
 	// Attempt to register the lock.
@@ -69,7 +69,7 @@ func (pls *posixLockState) lockFileImpl(path string) (Lock, error) {
 
 	// Check again, with write lock held.
 	if has := pls.held[stat.Ino]; has != nil {
-		return nil, ErrLockFailed
+		return nil, ErrLockHeld
 	}
 
 	// Use "flock()" to get a lock on the file.
@@ -81,7 +81,7 @@ func (pls *posixLockState) lockFileImpl(path string) (Lock, error) {
 			switch errno {
 			case syscall.EWOULDBLOCK:
 				// Someone else holds the lock on this file.
-				return nil, ErrLockFailed
+				return nil, ErrLockHeld
 			default:
 				return nil, err
 			}
@@ -94,10 +94,10 @@ func (pls *posixLockState) lockFileImpl(path string) (Lock, error) {
 	}
 	pls.held[stat.Ino] = fd
 	fd = nil // Don't Close in defer().
-	return &posixLock{pls, stat.Ino}, nil
+	return &posixLockHandle{pls, stat.Ino}, nil
 }
 
-func getOrCreateLockFile(path string) (*os.File, error) {
+func getOrCreateLockFile(path, content string) (*os.File, error) {
 	// Loop until we've either created or opened the file.
 	for {
 		// Attempt to open the file. This will succeed if the file already exists.
@@ -114,7 +114,12 @@ func getOrCreateLockFile(path string) (*os.File, error) {
 			fd, err := os.OpenFile(path, (os.O_CREATE | os.O_EXCL | os.O_RDWR), 0664)
 			switch {
 			case err == nil:
-				// Successfully created the new file.
+				// Successfully created the new file. If we have content to write, try
+				// and write it.
+				if content != "" {
+					// Failure to write content is non-fatal.
+					_, _ = fd.WriteString(content)
+				}
 				return fd, err
 
 			case os.IsExist(err):
@@ -130,12 +135,12 @@ func getOrCreateLockFile(path string) (*os.File, error) {
 	}
 }
 
-type posixLock struct {
+type posixLockHandle struct {
 	pls *posixLockState
 	ino uint64
 }
 
-func (l *posixLock) Unlock() error {
+func (l *posixLockHandle) Unlock() error {
 	if l.pls == nil {
 		panic("lock is not held")
 	}
