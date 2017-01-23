@@ -40,23 +40,26 @@ func (pls *posixLockState) lockFileImpl(path string) (Lock, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		// Close "fd". On success, we'll clear "fd", so this will become a no-op.
+		if fd != nil {
+			fd.Close()
+		}
+	}()
 
 	st, err := fd.Stat()
 	if err != nil {
-		fd.Close()
 		return nil, err
 	}
 	stat := st.Sys().(*syscall.Stat_t)
 
 	// Do we already have a lock on this file?
-
 	pls.RLock()
 	has := pls.held[stat.Ino]
 	pls.RUnlock()
 
 	if has != nil {
 		// Some other code path within our process already holds the lock.
-		fd.Close()
 		return nil, ErrLockFailed
 	}
 
@@ -66,14 +69,31 @@ func (pls *posixLockState) lockFileImpl(path string) (Lock, error) {
 
 	// Check again, with write lock held.
 	if has := pls.held[stat.Ino]; has != nil {
-		fd.Close()
 		return nil, ErrLockFailed
+	}
+
+	// Use "flock()" to get a lock on the file.
+	//
+	// LOCK_EX: Exclusive lock
+	// LOCK_NB: Non-blocking.
+	if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errno, ok := err.(syscall.Errno); ok {
+			switch errno {
+			case syscall.EWOULDBLOCK:
+				// Someone else holds the lock on this file.
+				return nil, ErrLockFailed
+			default:
+				return nil, err
+			}
+		}
+		return nil, err
 	}
 
 	if pls.held == nil {
 		pls.held = make(map[uint64]*os.File)
 	}
 	pls.held[stat.Ino] = fd
+	fd = nil // Don't Close in defer().
 	return &posixLock{pls, stat.Ino}, nil
 }
 
