@@ -1,0 +1,22 @@
+# Copyright 2017 by Dan Jacques. All rights reserved.
+# Use of this source code is governed by a BSD-style
+# license that can be found in the LICENSE file.
+
+language: go
+
+go:
+  - 1.2
+  - 1.3
+  - 1.5
+  - 1.6
+  - 1.7
+  - tip
+
+before_install:
+  - go get github.com/maruel/pre-commit-go/cmd/pcg
+
+install:
+  - go get -t ./...
+
+script:
+  - pcg
