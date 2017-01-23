@@ -296,3 +296,73 @@ func testMultiProcessingSubprocess(lock, out string, respW io.Writer, signalR io
 	}
 	return 0
 }
+
+func TestBlockingAndContent(t *testing.T) {
+	t.Parallel()
+
+	withTempDir(t, "content", func(tdir string) {
+		lock := filepath.Join(tdir, "lock")
+		heldC := make(chan struct{})
+		blockedC := make(chan struct{})
+		errC := make(chan error)
+
+		// First goroutine: acquire lock, write content.
+		const expected = "First"
+		go func() {
+			l := L{
+				Path:    lock,
+				Content: expected,
+			}
+			errC <- l.With(func() error {
+				// Signal that we're holding the lock.
+				close(heldC)
+
+				// Wait for our other goroutine to signal that it has tried and failed
+				// to acquire the lock.
+				<-blockedC
+
+				// Release the lock.
+				return nil
+			})
+		}()
+
+		// Second goroutine: test blocking, try and write content, should not write
+		// because first has already done it.
+		go func(blockedC chan<- struct{}) {
+			// Wait for the first to signal that it has the lock.
+			<-heldC
+
+			l := L{
+				Path:    lock,
+				Content: "Second",
+				Block: func() error {
+					// Notify that we've tried and failed to acquire the lock.
+					if blockedC != nil {
+						close(blockedC)
+						blockedC = nil
+					}
+					time.Sleep(time.Millisecond)
+					return nil
+				},
+			}
+			errC <- l.With(func() error { return nil })
+		}(blockedC)
+
+		// Wait for our goroutines to finish.
+		for i := 0; i < 2; i++ {
+			if err := <-errC; err != nil {
+				t.Fatalf("goroutine error: %v", err)
+			}
+		}
+
+		// Confirm that the content is written, and that it is the first
+		// goroutine's content.
+		content, err := ioutil.ReadFile(lock)
+		if err != nil {
+			t.Fatalf("failed to read content: %v", err)
+		}
+		if string(content) != expected {
+			t.Fatalf("content does not match expected (%s != %s)", content, expected)
+		}
+	})
+}
