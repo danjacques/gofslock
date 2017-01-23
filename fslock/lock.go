@@ -31,7 +31,7 @@ type L struct {
 	// Path is the path of the file to lock.
 	Path string
 
-	// Content, if not empty, is the lock file content. Content is written to the
+	// Content, if populated, is the lock file content. Content is written to the
 	// file when the lock call creates it, and only if the lock call actually
 	// creates the file. Failure to write Content is non-fatal.
 	//
@@ -42,7 +42,7 @@ type L struct {
 	//
 	// Content is not synchronized with the actual locking. Failure to write
 	// Content to the lock file is considered non-fatal.
-	Content string
+	Content []byte
 
 	// Block is the configured blocking function.
 	//

@@ -5,6 +5,7 @@
 package fslock
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -311,7 +312,7 @@ func TestBlockingAndContent(t *testing.T) {
 		go func() {
 			l := L{
 				Path:    lock,
-				Content: expected,
+				Content: []byte(expected),
 			}
 			errC <- l.With(func() error {
 				// Signal that we're holding the lock.
@@ -334,7 +335,7 @@ func TestBlockingAndContent(t *testing.T) {
 
 			l := L{
 				Path:    lock,
-				Content: "Second",
+				Content: []byte("Second"),
 				Block: func() error {
 					// Notify that we've tried and failed to acquire the lock.
 					if blockedC != nil {
@@ -361,7 +362,7 @@ func TestBlockingAndContent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to read content: %v", err)
 		}
-		if string(content) != expected {
+		if bytes.Equal(content, []byte(expected)) {
 			t.Fatalf("content does not match expected (%s != %s)", content, expected)
 		}
 	})

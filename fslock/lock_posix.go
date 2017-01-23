@@ -97,44 +97,6 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 	return &posixLockHandle{pls, stat.Ino}, nil
 }
 
-func getOrCreateLockFile(path, content string) (*os.File, error) {
-	// Loop until we've either created or opened the file.
-	for {
-		// Attempt to open the file. This will succeed if the file already exists.
-		fd, err := os.OpenFile(path, os.O_RDONLY, 0664)
-		switch {
-		case err == nil:
-			// Successfully opened the file, return handle.
-			return fd, nil
-
-		case os.IsNotExist(err):
-			// The file doesn't exist. Attempt to exclusively create it.
-			//
-			// If this fails, the file exists, so we will try opening it again.
-			fd, err := os.OpenFile(path, (os.O_CREATE | os.O_EXCL | os.O_RDWR), 0664)
-			switch {
-			case err == nil:
-				// Successfully created the new file. If we have content to write, try
-				// and write it.
-				if content != "" {
-					// Failure to write content is non-fatal.
-					_, _ = fd.WriteString(content)
-				}
-				return fd, err
-
-			case os.IsExist(err):
-				// Loop, we will try to open the file.
-
-			default:
-				return nil, err
-			}
-
-		default:
-			return nil, err
-		}
-	}
-}
-
 type posixLockHandle struct {
 	pls *posixLockState
 	ino uint64
@@ -157,4 +119,44 @@ func (l *posixLockHandle) Unlock() error {
 	}
 	delete(l.pls.held, l.ino)
 	return nil
+}
+
+func getOrCreateLockFile(path string, content []byte) (*os.File, error) {
+	const mode = 0640 | os.ModeTemporary
+
+	// Loop until we've either created or opened the file.
+	for {
+		// Attempt to open the file. This will succeed if the file already exists.
+		fd, err := os.OpenFile(path, os.O_RDONLY, mode)
+		switch {
+		case err == nil:
+			// Successfully opened the file, return handle.
+			return fd, nil
+
+		case os.IsNotExist(err):
+			// The file doesn't exist. Attempt to exclusively create it.
+			//
+			// If this fails, the file exists, so we will try opening it again.
+			fd, err := os.OpenFile(path, (os.O_CREATE | os.O_EXCL | os.O_RDWR), mode)
+			switch {
+			case err == nil:
+				// Successfully created the new file. If we have content to write, try
+				// and write it.
+				if len(content) > 0 {
+					// Failure to write content is non-fatal.
+					_, _ = fd.Write(content)
+				}
+				return fd, err
+
+			case os.IsExist(err):
+				// Loop, we will try to open the file.
+
+			default:
+				return nil, err
+			}
+
+		default:
+			return nil, err
+		}
+	}
 }
