@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func TestConcurrent(t *testing.T) {
 		value := 0
 		lock := filepath.Join(tdir, "lock")
 
-		const count = 256
+		const count = 1024
 		startC := make(chan struct{})
 		doneC := make(chan error, count)
 
@@ -95,7 +96,11 @@ func TestConcurrent(t *testing.T) {
 			}
 		}
 		if len(errs) > 0 {
-			t.Fatalf("encountered %d error(s)", len(errs))
+			errList := make([]string, len(errs))
+			for i, err := range errs {
+				errList[i] = err.Error()
+			}
+			t.Fatalf("encountered %d error(s):\n%s", len(errs), strings.Join(errList, "\n"))
 		}
 		if value != count {
 			t.Fatalf("value doesn't match expected (%d != %d)", value, count)

@@ -22,8 +22,4 @@ type Lock interface {
 	Unlock() error
 }
 
-func LockFile(path string) (Lock, error) { return fakeLock{}, nil }
-
-type fakeLock struct{}
-
-func (fl fakeLock) Unlock() error { return nil }
+func LockFile(path string) (Lock, error) { return lockFileImpl(path) }
