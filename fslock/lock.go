@@ -13,7 +13,9 @@ import (
 var ErrLockHeld = errors.New("fslock: lock is held")
 
 // Handle is a reference to a held lock. It must be released via Unlock when
-// finished.
+// finished. Multiple calls to Unlock will panic.
+//
+// Handle is NOT safe for concurrent use.
 type Handle interface {
 	// Unlock releases the held lock.
 	//
@@ -23,10 +25,13 @@ type Handle interface {
 	Unlock() error
 }
 
-// DelayFunc is used for the Delay field in a Lock.
+// Blocker is used for the Delay field in a Lock.
 type Blocker func() error
 
 // L describes a filesystem lock.
+//
+// L's fields should not be modified concurrently, but L's methods are safe
+// for concurrent use.
 type L struct {
 	// Path is the path of the file to lock.
 	Path string
@@ -47,9 +52,10 @@ type L struct {
 	// Block is the configured blocking function.
 	//
 	// If not nil, an attempt to acquire the lock will loop indefinitely until an
-	// error is encountered or the lock is acquired. Block will be called in
-	// between each acquire attempt, and should delay and/or cancel the
-	// acquisition.
+	// error other than ErrLockHeld is encountered (fatal) or the lock is
+	// acquired. Block will be called each time a lock attempt returns
+	// ErrLockHeld, and should delay and/or cancel the acquisition by returning
+	// nil or an error code respectively.
 	//
 	// If Block returns an error, it will be propagated as the error result of the
 	// locking attempt.

@@ -368,3 +368,38 @@ func TestBlockingAndContent(t *testing.T) {
 		}
 	})
 }
+
+// TestUnlock tests a lock's Unlock function.
+func TestUnlock(t *testing.T) {
+	t.Parallel()
+
+	withTempDir(t, "content", func(tdir string) {
+		lock := filepath.Join(tdir, "lock")
+		h, err := Lock(lock)
+		if err != nil {
+			t.Fatalf("failed to acquire lock: %v", err)
+		}
+		if h == nil {
+			t.Fatal("lock did not return a Handle")
+		}
+
+		if err := h.Unlock(); err != nil {
+			t.Fatalf("Unlock returned an error: %v", err)
+		}
+
+		var panicVal interface{}
+		err = func() error {
+			defer func() {
+				panicVal = recover()
+			}()
+			return h.Unlock()
+		}()
+		if err != nil {
+			t.Fatalf("second Unlock returned an error: %v", err)
+		}
+		if panicVal == nil {
+			t.Fatal("second Unlock did not panic")
+		}
+		t.Logf("panicked with: %v", panicVal)
+	})
+}

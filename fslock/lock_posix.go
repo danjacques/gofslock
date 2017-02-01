@@ -118,6 +118,7 @@ func (l *posixLockHandle) Unlock() error {
 		return err
 	}
 	delete(l.pls.held, l.ino)
+	l.pls = nil
 	return nil
 }
 

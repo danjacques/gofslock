@@ -32,7 +32,16 @@ type winLockHandle struct {
 	fd *os.File
 }
 
-func (h winLockHandle) Unlock() error { return h.fd.Close() }
+func (h winLockHandle) Unlock() error {
+	if h.fd == nil {
+		panic("lock is not held")
+	}
+	if err := h.fd.Close(); err != nil {
+		return err
+	}
+	h.fd = nil
+	return nil
+}
 
 func exclusiveGetOrCreateFile(path string) (*os.File, bool, error) {
 	mod := syscall.NewLazyDLL("kernel32.dll")
