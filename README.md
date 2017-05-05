@@ -3,6 +3,15 @@ Go implementation of filesystem-level locking.
 
 [![GoDoc](https://godoc.org/github.com/danjacques/gofslock?status.svg)](http://godoc.org/github.com/danjacques/gofslock)
 [![Build Status](https://travis-ci.org/danjacques/gofslock.svg?branch=master)](https://travis-ci.org/danjacques/gofslock)
+[![Coverage Status](https://coveralls.io/repos/github/danjacques/gofslock/badge.svg?branch=master)](https://coveralls.io/github/danjacques/gofslock?branch=master)
+
+`gofslock` offers several features:
+* Exclusive and shared locking senamtics.
+* Consistent intra- and inter-processing locking behavior across major operating
+  systems (notably Linux, Mac, and Windows).
+* Works on all Go versions.
+* Only depends on Go standard library.
+* Locking behavior and interaction is heavily tested.
 
 Feedback
 --------
@@ -14,7 +23,7 @@ Contributions
 -------------
 
 Contributions to this project are welcome, though please
-[file an issue](https://github.com/danjacques/gofslock/issues/new).
+[file an issue](https://github.com/danjacques/gofslock/issues/new)
 before starting work on anything major.
 
 To get started contributing to this project,

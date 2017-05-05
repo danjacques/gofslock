@@ -6,17 +6,30 @@ package fslock
 
 import (
 	"bytes"
+	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+var logSubprocess = flag.Bool("test.logsubprocess", false, "Enable verbose subprocess logging.")
+
+const logSubprocessEnv = "_FSLOCK_LOG_SUBPROCESS"
+
+func logf(fmt string, args ...interface{}) {
+	if v := os.Getenv(logSubprocessEnv); v != "" {
+		log.Printf(fmt, args...)
+	}
+}
 
 func withTempDir(t *testing.T, prefix string, fn func(string)) {
 	wd, err := os.Getwd()
@@ -114,9 +127,9 @@ func TestConcurrent(t *testing.T) {
 //
 // Success is if all of the subprocesses succeeded and the output file has the
 // correct value.
+//
+// NOTE: We don't run this test in parallel because it can tax CI resources.
 func TestMultiProcessing(t *testing.T) {
-	t.Parallel()
-
 	getFiles := func(tdir string) (lock, out string) {
 		lock = filepath.Join(tdir, "lock")
 		out = filepath.Join(tdir, "out")
@@ -141,6 +154,9 @@ func TestMultiProcessing(t *testing.T) {
 		return
 	}
 
+	// TODO: Replace with os.Executable for Go 1.8.
+	executable := os.Args[0]
+
 	// This pipe will be used to signal that the processes should start the test.
 	signalR, signalW, err := os.Pipe()
 	if err != nil {
@@ -164,23 +180,27 @@ func TestMultiProcessing(t *testing.T) {
 		}
 		t.Logf("wrote initial output file to [%s]", out)
 
-		// TODO: Replace with os.Executable for Go 1.8.
-		executable := os.Args[0]
-
 		const count = 256
 		cmds := make([]*exec.Cmd, count)
 
 		// Kill all of our processes on cleanup, regardless of success/failure.
 		defer func() {
 			for _, cmd := range cmds {
-				_ = cmd.Process.Kill()
-				_ = cmd.Wait()
+				if cmd != nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
 			}
 		}()
 
 		for i := range cmds {
+			env := append(os.Environ(), fmt.Sprintf("%s=%s", envSentinel, tdir))
+			if *logSubprocess {
+				env = append(env, fmt.Sprintf("%s=1", logSubprocessEnv))
+			}
+
 			cmd := exec.Command(executable, "-test.run", "^TestMultiProcessing$")
-			cmd.Env = append(os.Environ(), fmt.Sprintf("%s=%s", envSentinel, tdir))
+			cmd.Env = env
 			cmd.Stdin = signalR
 			cmd.Stdout = respW
 			cmd.Stderr = os.Stderr
@@ -255,13 +275,13 @@ func TestMultiProcessing(t *testing.T) {
 func testMultiProcessingSubprocess(lock, out string, respW io.Writer, signalR io.Reader) byte {
 	// Signal that we're ready to start.
 	if _, err := respW.Write([]byte{0}); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to send ready signal: %v", err)
+		logf("failed to send ready signal: %v", err)
 		return 1
 	}
 
 	// Wait for our signal (signalR closing).
 	if _, err := ioutil.ReadAll(signalR); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to wait for signal: %v", err)
+		logf("failed to wait for signal: %v", err)
 		return 2
 	}
 
@@ -291,7 +311,7 @@ func testMultiProcessingSubprocess(lock, out string, respW io.Writer, signalR io
 		return nil
 	})
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		logf("encountered error: %s", err)
 		return rc
 	}
 	return 0
@@ -373,7 +393,7 @@ func TestBlockingAndContent(t *testing.T) {
 func TestUnlock(t *testing.T) {
 	t.Parallel()
 
-	withTempDir(t, "content", func(tdir string) {
+	withTempDir(t, "unlock", func(tdir string) {
 		lock := filepath.Join(tdir, "lock")
 		h, err := Lock(lock)
 		if err != nil {
@@ -402,4 +422,322 @@ func TestUnlock(t *testing.T) {
 		}
 		t.Logf("panicked with: %v", panicVal)
 	})
+}
+
+// TestSharedConcurrent tests file locking within the same process using
+// concurrency (via goroutines).
+//
+// For this to really be effective, the test should be run with "-race", since
+// it's *possible* that all of the goroutines end up cooperating in spite of a
+// bug.
+func TestSharedConcurrent(t *testing.T) {
+	t.Parallel()
+
+	withTempDir(t, "shared_concurrent", func(tdir string) {
+		lock := filepath.Join(tdir, "lock")
+
+		// Each goroutine will obtain a shared lock simultaneously. Once all
+		// goroutines hold the lock, another will attempt to exclusively take the
+		// lock. We will ensure that this succeeds only after all of the shared
+		// locks have been released.
+		const count = 1024
+		var sharedCounter int32
+		hasLockC := make(chan struct{}, count)
+		waitForEveryoneC := make(chan struct{})
+		sharedErrC := make(chan error, count)
+
+		for i := 0; i < count; i++ {
+			go func() {
+				sharedErrC <- WithShared(lock, func() error {
+					atomic.AddInt32(&sharedCounter, 1)
+
+					// Note that we have the lock.
+					hasLockC <- struct{}{}
+
+					// Wait until everyone else does, too.
+					<-waitForEveryoneC
+
+					atomic.AddInt32(&sharedCounter, -1)
+					return nil
+				})
+			}()
+		}
+
+		// Wait for all of the goroutines to hold their shared lock.
+		exclusiveTriedAndFailedC := make(chan struct{})
+		exclusiveHasLockC := make(chan int32)
+		exclusiveErrC := make(chan error)
+		for i := 0; i < count; i++ {
+			<-hasLockC
+
+			// After the first goroutine holds the lock, start our exclusive lock
+			// goroutine.
+			if i == 0 {
+				go func() {
+					attempt := 0
+					exclusiveErrC <- WithBlocking(lock, func() error {
+						// (Blocker)
+						if attempt == 0 {
+							close(exclusiveTriedAndFailedC)
+						}
+						attempt++
+						time.Sleep(time.Millisecond)
+						return nil
+					}, func() error {
+						exclusiveHasLockC <- sharedCounter
+						return nil
+					})
+				}()
+			}
+		}
+
+		// Our shared lock is still being held, waiting for "waitForEveryoneC".
+		// Snapshot our shared counter, which should not be in contention.
+		if v := int(sharedCounter); v != count {
+			t.Errorf("Shared counter has unexpected value: %d", v)
+		}
+
+		// Wait for our exclusive lock to try and fail.
+		<-exclusiveTriedAndFailedC
+
+		// Let all of our shared locks release.
+		close(waitForEveryoneC)
+		for i := 0; i < count; i++ {
+			if err := <-sharedErrC; err != nil {
+				t.Errorf("Shared lock returned error: %s", err)
+			}
+		}
+		close(sharedErrC)
+
+		// Wait for our exclusive lock to finish.
+		if v := <-exclusiveHasLockC; v != 0 {
+			t.Errorf("Exclusive lock reported non-zero shared counter value: %d", v)
+		}
+		if err := <-exclusiveErrC; err != nil {
+			t.Errorf("Exclusive lock reported error: %s", err)
+		}
+	})
+}
+
+// TestSharedMultiProcessing tests access from multiple separate processes.
+//
+// We open by holding an exclusive lock, then spawning all of our subprocesses.
+// Each subprocess will try and fail to acquire the lock, then write a
+// "failed_shared" file to note this failure.
+//
+// After all "failed" files have been confirmed, we release our exclusive lock.
+// At this point, each process will acquire its shared lock, write a
+// "has_shared_lock" file to provie that it hols a shared lock, and wait for all
+// of the other processes' "has_shared_lock" files to show.
+//
+// Our main process, meanwhile, is scanning for any "has_shared_lock" files.
+// Once it sees one, it attempts to obtain an exclusive lock again. After the
+// first exclusive lock failure, it will write a "failed_exclusive" file.
+//
+// Once a process holding the shared lock observes the "failed_exclusive" file,
+// they will terminate.
+//
+// Finally, the exclusive lock will be obtained and the test will complete.
+//
+// NOTE: We don't run this test in parallel because it can tax CI resources.
+func TestSharedMultiProcessing(t *testing.T) {
+	getFiles := func(tdir string) (lock string) {
+		lock = filepath.Join(tdir, "lock")
+		return
+	}
+
+	// Are we a testing process instance, or the main process?
+	const envSentinel = "_FSLOCK_TEST_WORKDIR"
+	if state := os.Getenv(envSentinel); state != "" {
+		parts := strings.SplitN(state, ":", 2)
+		if len(parts) != 2 {
+			os.Exit(1)
+		}
+		name, path := parts[0], parts[1]
+
+		lock := getFiles(path)
+		rv := testSharedMultiProcessingSubprocess(name, lock, path)
+		os.Exit(rv)
+		return
+	}
+
+	// TODO: Replace with os.Executable for Go 1.8.
+	executable := os.Args[0]
+
+	withTempDir(t, "shared_multiprocessing", func(tdir string) {
+		const count = 256
+		const delay = 10 * time.Millisecond
+
+		lock := getFiles(tdir)
+
+		// Start our exclusive lock monitor goroutine.
+		exclusiveLockHeldC := make(chan struct{})
+		monitor := func() error {
+			err := With(lock, func() error {
+				t.Logf("monitor: acquired exclusive lock")
+
+				// Notify that we hold the exclusive lock.
+				close(exclusiveLockHeldC)
+
+				// Wait for "failed_shared" files.
+				if err := waitForFiles(tdir, "failed_shared", count); err != nil {
+					return err
+				}
+				t.Logf("monitor: observed 'failed_shared' files")
+
+				// Release exclusive lock...
+				return nil
+			})
+			if err != nil {
+				return err
+			}
+
+			// Wait for "has_shared_lock" files.
+			if err := waitForFiles(tdir, "has_shared_lock", count); err != nil {
+				return err
+			}
+			t.Logf("monitor: observed 'has_shared_lock' files")
+
+			// Try and get an exclusive lock. When we fail, write "failed_exclusive"
+			// file.
+			attempts := 0
+			return WithBlocking(lock, func() error {
+				t.Logf("monitor: failed to re-acquire exclusive lock (%d)", attempts)
+				if attempts == 0 {
+					if err := writeFileStamp(tdir, "failed_exclusive", "master"); err != nil {
+						return err
+					}
+				}
+				attempts++
+				time.Sleep(delay)
+				return nil
+			}, func() error {
+				// All shared locks are released, gained exclusive lock.
+				t.Logf("monitor: acquired exclusive lock")
+				return nil
+			})
+		}
+		errC := make(chan error)
+		go func() {
+			errC <- monitor()
+		}()
+
+		// Wait for our exclusive lock to be held. Then spawn our subprocesses.
+		//
+		// In defer, kill any spawned processes on cleanup, regardless of
+		// success/failure.
+		<-exclusiveLockHeldC
+
+		cmds := make([]*exec.Cmd, count)
+		defer func() {
+			for _, cmd := range cmds {
+				if cmd != nil {
+					_ = cmd.Process.Kill()
+					_ = cmd.Wait()
+				}
+			}
+		}()
+
+		for i := range cmds {
+			env := append(os.Environ(), fmt.Sprintf("%s=%d:%s", envSentinel, i, tdir))
+			if *logSubprocess {
+				env = append(env, fmt.Sprintf("%s=1", logSubprocessEnv))
+			}
+
+			cmd := exec.Command(executable, "-test.run", "^TestSharedMultiProcessing$")
+			cmd.Env = env
+			cmd.Stderr = os.Stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("failed to start subprocess: %v", err)
+			}
+			cmds[i] = cmd
+		}
+
+		// Reap all of our subprocesses.
+		for _, cmd := range cmds {
+			if err := cmd.Wait(); err != nil {
+				t.Errorf("failed to wait for process: %v", err)
+			}
+		}
+
+		// Our exclusive lock should have exited without an error.
+		if err := <-errC; err != nil {
+			t.Errorf("exclusive lock monitor failed with error: %s", err)
+		}
+	})
+}
+
+func testSharedMultiProcessingSubprocess(name, lock, dir string) int {
+	const delay = 10 * time.Millisecond
+
+	attempts := 0
+	err := WithSharedBlocking(lock, func() error {
+		logf("%s: failed to acquire shared lock (%d)", name, attempts)
+		if attempts == 0 {
+			if err := writeFileStamp(dir, "failed_shared", name); err != nil {
+				return err
+			}
+		}
+		attempts++
+		time.Sleep(delay)
+		return nil
+	}, func() error {
+		// We received the shared lock. Write our stamp file noting this.
+		logf("%s: acquired shared lock", name)
+		if err := writeFileStamp(dir, "has_shared_lock", name); err != nil {
+			return err
+		}
+
+		// Wait for "failed_exclusive" file.
+		if err := waitForFiles(dir, "failed_exclusive", 1); err != nil {
+			return err
+		}
+		logf("%s: observed 'failed_exclusive' file", name)
+
+		return nil
+	})
+	if err != nil {
+		logf("%s: terminating with error: %s", err)
+		return 1
+	}
+
+	logf("%s: terminating successfully", name)
+	return 0
+}
+
+func scanForFiles(dir, prefix string) (int, error) {
+	fileInfos, err := ioutil.ReadDir(dir)
+	if err != nil {
+		return 0, err
+	}
+
+	count := 0
+	for _, fi := range fileInfos {
+		if strings.HasPrefix(fi.Name(), prefix) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func waitForFiles(dir, prefix string, count int) error {
+	for {
+		num, err := scanForFiles(dir, prefix)
+		if err != nil {
+			return err
+		}
+		if num >= count {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func writeFileStamp(dir, prefix, name string) error {
+	path := filepath.Join(dir, fmt.Sprintf("%s.%s", prefix, name))
+	fd, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	return fd.Close()
 }

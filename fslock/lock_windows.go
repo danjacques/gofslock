@@ -13,7 +13,7 @@ import (
 const errno_ERROR_SHARING_VIOLATION syscall.Errno = 32
 
 func lockImpl(l *L) (Handle, error) {
-	fd, created, err := exclusiveGetOrCreateFile(l.Path)
+	fd, created, err := getOrCreateFile(l.Path, l.Shared)
 	if err != nil {
 		return nil, err
 	}
@@ -43,7 +43,7 @@ func (h winLockHandle) Unlock() error {
 	return nil
 }
 
-func exclusiveGetOrCreateFile(path string) (*os.File, bool, error) {
+func getOrCreateFile(path string, shared bool) (*os.File, bool, error) {
 	mod := syscall.NewLazyDLL("kernel32.dll")
 	proc := mod.NewProc("CreateFileW")
 
@@ -52,10 +52,15 @@ func exclusiveGetOrCreateFile(path string) (*os.File, bool, error) {
 		return nil, false, err
 	}
 
+	dwShareMode := uint32(0) // Exclusive (no sharing)
+	if shared {
+		dwShareMode = syscall.FILE_SHARE_READ | syscall.FILE_SHARE_WRITE
+	}
+
 	a, _, err := proc.Call(
 		uintptr(unsafe.Pointer(pathp)),
 		uintptr(syscall.GENERIC_READ|syscall.GENERIC_WRITE),
-		0,          // No sharing.
+		uintptr(dwShareMode),
 		uintptr(0), // No security attributes.
 		uintptr(syscall.OPEN_ALWAYS),
 		uintptr(syscall.FILE_ATTRIBUTE_NORMAL),

@@ -26,13 +26,25 @@ func lockImpl(l *L) (Handle, error) {
 	return globalPosixLockState.lockImpl(l)
 }
 
+// posixLockEntry is an entry in a posixLockState represneting a single inode.
+type posixLockEntry struct {
+	// file is the underlying open file descriptor.
+	file *os.File
+
+	// isShared is true if this is a shared lock entry, false otherwise.
+	shared bool
+	// sharedCount, if "shared" is true, is the number of in-process open shared
+	// handles.
+	sharedCount uint64
+}
+
 // posixLockState maintains an internal state of filesystem locks.
 //
 // For runtime usage, this is maintained in the global variable,
 // globalPosixLockState.
 type posixLockState struct {
 	sync.RWMutex
-	held map[uint64]*os.File
+	held map[uint64]*posixLockEntry
 }
 
 func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
@@ -55,12 +67,15 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 
 	// Do we already have a lock on this file?
 	pls.RLock()
-	has := pls.held[stat.Ino]
+	ple := pls.held[stat.Ino]
 	pls.RUnlock()
 
-	if has != nil {
-		// Some other code path within our process already holds the lock.
-		return nil, ErrLockHeld
+	if ple != nil {
+		// If we are requesting an exclusive lock, or if "ple" is held exclusively,
+		// then deny the request.
+		if !(l.Shared && ple.shared) {
+			return nil, ErrLockHeld
+		}
 	}
 
 	// Attempt to register the lock.
@@ -68,15 +83,29 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 	defer pls.Unlock()
 
 	// Check again, with write lock held.
-	if has := pls.held[stat.Ino]; has != nil {
-		return nil, ErrLockHeld
+	if ple := pls.held[stat.Ino]; ple != nil {
+		if !(l.Shared && ple.shared) {
+			return nil, ErrLockHeld
+		}
+
+		// We're requesting a shared lock, and "ple" is shared, so we can grant a
+		// handle.
+		ple.sharedCount++
+		return &posixLockHandle{pls, stat.Ino, true}, nil
 	}
 
 	// Use "flock()" to get a lock on the file.
 	//
 	// LOCK_EX: Exclusive lock
 	// LOCK_NB: Non-blocking.
-	if err := syscall.Flock(int(fd.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	flags := syscall.LOCK_NB
+	if l.Shared {
+		flags |= syscall.LOCK_SH
+	} else {
+		flags |= syscall.LOCK_EX
+	}
+
+	if err := syscall.Flock(int(fd.Fd()), flags); err != nil {
 		if errno, ok := err.(syscall.Errno); ok {
 			switch errno {
 			case syscall.EWOULDBLOCK:
@@ -90,16 +119,23 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 	}
 
 	if pls.held == nil {
-		pls.held = make(map[uint64]*os.File)
+		pls.held = make(map[uint64]*posixLockEntry)
 	}
-	pls.held[stat.Ino] = fd
+
+	ple = &posixLockEntry{
+		file:        fd,
+		shared:      l.Shared,
+		sharedCount: 1, // Ignored for exclusive.
+	}
+	pls.held[stat.Ino] = ple
 	fd = nil // Don't Close in defer().
-	return &posixLockHandle{pls, stat.Ino}, nil
+	return &posixLockHandle{pls, stat.Ino, ple.shared}, nil
 }
 
 type posixLockHandle struct {
-	pls *posixLockState
-	ino uint64
+	pls    *posixLockState
+	ino    uint64
+	shared bool
 }
 
 func (l *posixLockHandle) Unlock() error {
@@ -110,14 +146,27 @@ func (l *posixLockHandle) Unlock() error {
 	l.pls.Lock()
 	defer l.pls.Unlock()
 
-	fd := l.pls.held[l.ino]
-	if fd == nil {
+	ple := l.pls.held[l.ino]
+	if ple == nil {
 		panic(fmt.Errorf("lock for inode %d is not held", l.ino))
 	}
-	if err := fd.Close(); err != nil {
-		return err
+	if l.shared {
+		if !ple.shared {
+			panic(fmt.Errorf("lock for inode %d is not shared, but handle is shared", l.ino))
+		}
+		ple.sharedCount--
 	}
-	delete(l.pls.held, l.ino)
+
+	if !ple.shared || ple.sharedCount == 0 {
+		// Last holder of the lock. Clean it up and unregister.
+		if err := ple.file.Close(); err != nil {
+			return err
+		}
+		delete(l.pls.held, l.ino)
+	}
+
+	// Clear the lock's "pls" field so that future calls to Unlock will fail
+	// immediately.
 	l.pls = nil
 	return nil
 }

@@ -36,6 +36,12 @@ type L struct {
 	// Path is the path of the file to lock.
 	Path string
 
+	// Shared, if true, indicates that this should be a shared lock rather than
+	// an exclusive lock.
+	//
+	// See package documentation for details.
+	Shared bool
+
 	// Content, if populated, is the lock file content. Content is written to the
 	// file when the lock call creates it, and only if the lock call actually
 	// creates the file. Failure to write Content is non-fatal.
