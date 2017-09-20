@@ -402,6 +402,9 @@ func TestUnlock(t *testing.T) {
 		if h == nil {
 			t.Fatal("lock did not return a Handle")
 		}
+		if h.LockFile() == nil {
+			t.Error("lock returned a nil file handle")
+		}
 
 		if err := h.Unlock(); err != nil {
 			t.Fatalf("Unlock returned an error: %v", err)

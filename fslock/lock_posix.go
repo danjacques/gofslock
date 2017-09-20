@@ -91,7 +91,7 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 		// We're requesting a shared lock, and "ple" is shared, so we can grant a
 		// handle.
 		ple.sharedCount++
-		return &posixLockHandle{pls, stat.Ino, true}, nil
+		return &posixLockHandle{pls, ple, stat.Ino, true}, nil
 	}
 
 	// Use "flock()" to get a lock on the file.
@@ -129,11 +129,12 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 	}
 	pls.held[stat.Ino] = ple
 	fd = nil // Don't Close in defer().
-	return &posixLockHandle{pls, stat.Ino, ple.shared}, nil
+	return &posixLockHandle{pls, ple, stat.Ino, ple.shared}, nil
 }
 
 type posixLockHandle struct {
 	pls    *posixLockState
+	ple    *posixLockEntry
 	ino    uint64
 	shared bool
 }
@@ -170,6 +171,8 @@ func (l *posixLockHandle) Unlock() error {
 	l.pls = nil
 	return nil
 }
+
+func (l *posixLockHandle) LockFile() *os.File { return l.ple.file }
 
 func getOrCreateLockFile(path string, content []byte) (*os.File, error) {
 	const mode = 0640 | os.ModeTemporary

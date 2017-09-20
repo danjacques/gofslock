@@ -6,6 +6,7 @@ package fslock
 
 import (
 	"errors"
+	"os"
 )
 
 // ErrLockHeld is a sentinel error returned when the lock could not be
@@ -23,6 +24,17 @@ type Handle interface {
 	// not happen unless something has gone externally wrong, or the lock was
 	// mishandled.
 	Unlock() error
+
+	// LockFile returns the underlying lock File. This is not generally useful,
+	// and should be used circumstantially. Operating on the file occurs outside
+	// of the scope of this package, and can result in unintended consequences.
+	//
+	// The file should NOT be directly closed or modified.
+	//
+	// The file will be valid for the duration of the Handle. Once the Handle is
+	// closed with Unlock, the file's state is implementation-specific and
+	// unspecified.
+	LockFile() *os.File
 }
 
 // Blocker is used for the Delay field in a Lock.

@@ -25,14 +25,14 @@ func lockImpl(l *L) (Handle, error) {
 	}
 
 	// We own the lock on virtue of having accessed the file exclusively.
-	return winLockHandle{fd}, nil
+	return &winLockHandle{fd}, nil
 }
 
 type winLockHandle struct {
 	fd *os.File
 }
 
-func (h winLockHandle) Unlock() error {
+func (h *winLockHandle) Unlock() error {
 	if h.fd == nil {
 		panic("lock is not held")
 	}
@@ -42,6 +42,8 @@ func (h winLockHandle) Unlock() error {
 	h.fd = nil
 	return nil
 }
+
+func (h *winLockHandle) LockFile() *os.File { return h.fd }
 
 func getOrCreateFile(path string, shared bool) (*os.File, bool, error) {
 	mod := syscall.NewLazyDLL("kernel32.dll")
