@@ -61,7 +61,7 @@ func TestConcurrent(t *testing.T) {
 		value := 0
 		lock := filepath.Join(tdir, "lock")
 
-		const count = 1024
+		const count = 256
 		startC := make(chan struct{})
 		doneC := make(chan error, count)
 
@@ -443,7 +443,7 @@ func TestSharedConcurrent(t *testing.T) {
 		// goroutines hold the lock, another will attempt to exclusively take the
 		// lock. We will ensure that this succeeds only after all of the shared
 		// locks have been released.
-		const count = 1024
+		const count = 256
 		var sharedCounter int32
 		hasLockC := make(chan struct{}, count)
 		waitForEveryoneC := make(chan struct{})
@@ -568,7 +568,7 @@ func TestSharedMultiProcessing(t *testing.T) {
 	executable := os.Args[0]
 
 	withTempDir(t, "shared_multiprocessing", func(tdir string) {
-		const count = 256
+		const count = 128
 		const delay = 10 * time.Millisecond
 
 		lock := getFiles(tdir)
