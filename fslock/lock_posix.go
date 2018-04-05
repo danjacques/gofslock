@@ -8,10 +8,10 @@ package fslock
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"os"
 	"sync"
 	"syscall"
-	"golang.org/x/sys/unix"
 )
 
 var globalPosixLockState posixLockState
@@ -98,7 +98,7 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 	// Use "flock()" to get a lock on the file.
 	//
 	lockcmd := unix.F_SETLK
-	lockstr := unix.Flock_t {
+	lockstr := unix.Flock_t{
 		Type: unix.F_WRLCK, Start: 0, Len: 0, Whence: 1,
 	}
 
