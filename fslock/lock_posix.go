@@ -181,7 +181,7 @@ func getOrCreateLockFile(path string, content []byte) (*os.File, error) {
 	// Loop until we've either created or opened the file.
 	for {
 		// Attempt to open the file. This will succeed if the file already exists.
-		fd, err := os.OpenFile(path, os.O_RDONLY, mode)
+		fd, err := os.OpenFile(path, os.O_RDWR, mode)
 		switch {
 		case err == nil:
 			// Successfully opened the file, return handle.
