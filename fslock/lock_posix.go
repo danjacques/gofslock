@@ -2,12 +2,13 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build darwin linux freebsd netbsd openbsd android
+// +build darwin linux freebsd netbsd openbsd android solaris
 
 package fslock
 
 import (
 	"fmt"
+	"golang.org/x/sys/unix"
 	"os"
 	"sync"
 	"syscall"
@@ -96,16 +97,16 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 
 	// Use "flock()" to get a lock on the file.
 	//
-	// LOCK_EX: Exclusive lock
-	// LOCK_NB: Non-blocking.
-	flags := syscall.LOCK_NB
-	if l.Shared {
-		flags |= syscall.LOCK_SH
-	} else {
-		flags |= syscall.LOCK_EX
+	lockcmd := unix.F_SETLK
+	lockstr := unix.Flock_t{
+		Type: unix.F_WRLCK, Start: 0, Len: 0, Whence: 1,
 	}
 
-	if err := syscall.Flock(int(fd.Fd()), flags); err != nil {
+	if l.Shared {
+		lockstr.Type = unix.F_RDLCK
+	}
+
+	if err := unix.FcntlFlock(fd.Fd(), lockcmd, &lockstr); err != nil {
 		if errno, ok := err.(syscall.Errno); ok {
 			switch errno {
 			case syscall.EWOULDBLOCK:
@@ -180,7 +181,7 @@ func getOrCreateLockFile(path string, content []byte) (*os.File, error) {
 	// Loop until we've either created or opened the file.
 	for {
 		// Attempt to open the file. This will succeed if the file already exists.
-		fd, err := os.OpenFile(path, os.O_RDONLY, mode)
+		fd, err := os.OpenFile(path, os.O_RDWR, mode)
 		switch {
 		case err == nil:
 			// Successfully opened the file, return handle.
