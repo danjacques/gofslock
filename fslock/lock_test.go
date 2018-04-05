@@ -61,7 +61,7 @@ func TestConcurrent(t *testing.T) {
 		value := 0
 		lock := filepath.Join(tdir, "lock")
 
-		const count = 256
+		const count = 100
 		startC := make(chan struct{})
 		doneC := make(chan error, count)
 
@@ -180,7 +180,7 @@ func TestMultiProcessing(t *testing.T) {
 		}
 		t.Logf("wrote initial output file to [%s]", out)
 
-		const count = 256
+		const count = 100
 		cmds := make([]*exec.Cmd, count)
 
 		// Kill all of our processes on cleanup, regardless of success/failure.
@@ -443,7 +443,7 @@ func TestSharedConcurrent(t *testing.T) {
 		// goroutines hold the lock, another will attempt to exclusively take the
 		// lock. We will ensure that this succeeds only after all of the shared
 		// locks have been released.
-		const count = 256
+		const count = 100
 		var sharedCounter int32
 		hasLockC := make(chan struct{}, count)
 		waitForEveryoneC := make(chan struct{})
