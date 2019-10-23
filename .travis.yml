@@ -3,21 +3,20 @@
 # license that can be found in the LICENSE file.
 
 language: go
+os:
+  - linux
+  - osx
 
 go:
-  - 1.2
-  - 1.3
-  - 1.5
-  - 1.6
-  - 1.7
-  - 1.8
+  - "1.9"
+  - "1.10"
+  - "1.11"
+  - "1.12"
+  - "1.13"
   - tip
-
-before_install:
-  - go get github.com/maruel/pre-commit-go/cmd/pcg
 
 install:
   - go get -t ./...
 
 script:
-  - pcg
+  - go test -v ./...

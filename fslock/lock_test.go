@@ -700,7 +700,7 @@ func testSharedMultiProcessingSubprocess(name, lock, dir string) int {
 		return nil
 	})
 	if err != nil {
-		logf("%s: terminating with error: %s", err)
+		logf("%s: terminating with error: %s", name, err)
 		return 1
 	}
 
