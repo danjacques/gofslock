@@ -6,6 +6,7 @@ package fslock
 
 import (
 	"os"
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -68,6 +69,8 @@ func getOrCreateFile(path string, shared bool) (*os.File, bool, error) {
 		uintptr(syscall.FILE_ATTRIBUTE_NORMAL),
 		0, // No template file.
 	)
+	runtime.KeepAlive(pathp)
+
 	fd := syscall.Handle(a)
 	errno := err.(syscall.Errno)
 	switch errno {
