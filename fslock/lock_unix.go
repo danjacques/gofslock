@@ -1,34 +1,28 @@
-// Copyright 2017 by Dan Jacques. All rights reserved.
+// Copyright 2022 by Dan Jacques. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build darwin linux freebsd netbsd openbsd android solaris aix
+//go:build !windows
 
 package fslock
 
 import (
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"sync"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-var globalPosixLockState posixLockState
-
-// lockImpl is an implementation of lock using POSIX locks via flock().
-//
-// flock() locks are released when *any* file handle to the locked file is
-// closed. To address this, we hold actual file handles globally. Attempts to
-// acquire a file lock first check to see if there is already a global entity
-// holding the lock (fail), then attempt to acquire the lock at a filesystem
-// level.
 func lockImpl(l *L) (Handle, error) {
-	return globalPosixLockState.lockImpl(l)
+	return globalUnixLockState.lockImpl(l)
 }
 
-// posixLockEntry is an entry in a posixLockState represneting a single inode.
-type posixLockEntry struct {
+var globalUnixLockState unixLockState
+
+// unixLockEntry is an entry in a unixLockState represneting a single inode.
+type unixLockEntry struct {
 	// file is the underlying open file descriptor.
 	file *os.File
 
@@ -39,16 +33,16 @@ type posixLockEntry struct {
 	sharedCount uint64
 }
 
-// posixLockState maintains an internal state of filesystem locks.
+// unixLockState maintains an internal state of filesystem locks.
 //
 // For runtime usage, this is maintained in the global variable,
-// globalPosixLockState.
-type posixLockState struct {
+// globalUnixLockState.
+type unixLockState struct {
 	sync.RWMutex
-	held map[uint64]*posixLockEntry
+	held map[uint64]*unixLockEntry
 }
 
-func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
+func (pls *unixLockState) lockImpl(l *L) (Handle, error) {
 	fd, err := getOrCreateLockFile(l.Path, l.Content)
 	if err != nil {
 		return nil, err
@@ -92,55 +86,37 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 		// We're requesting a shared lock, and "ple" is shared, so we can grant a
 		// handle.
 		ple.sharedCount++
-		return &posixLockHandle{pls, ple, stat.Ino, true}, nil
+		return &unixLockHandle{pls, ple, stat.Ino, true}, nil
 	}
 
-	// Use "flock()" to get a lock on the file.
-	//
-	lockcmd := unix.F_SETLK
-	lockstr := unix.Flock_t{
-		Type: unix.F_WRLCK, Start: 0, Len: 0, Whence: 1,
-	}
-
-	if l.Shared {
-		lockstr.Type = unix.F_RDLCK
-	}
-
-	if err := unix.FcntlFlock(fd.Fd(), lockcmd, &lockstr); err != nil {
-		if errno, ok := err.(syscall.Errno); ok {
-			switch errno {
-			case syscall.EWOULDBLOCK:
-				// Someone else holds the lock on this file.
-				return nil, ErrLockHeld
-			default:
-				return nil, err
-			}
-		}
+	// Call platform dependent flock_lock() to lock the file at a filesystem
+	// level.
+	if err := flock_lock(l, fd); err != nil {
 		return nil, err
 	}
 
 	if pls.held == nil {
-		pls.held = make(map[uint64]*posixLockEntry)
+		pls.held = make(map[uint64]*unixLockEntry)
 	}
 
-	ple = &posixLockEntry{
+	ple = &unixLockEntry{
 		file:        fd,
 		shared:      l.Shared,
 		sharedCount: 1, // Ignored for exclusive.
 	}
 	pls.held[stat.Ino] = ple
 	fd = nil // Don't Close in defer().
-	return &posixLockHandle{pls, ple, stat.Ino, ple.shared}, nil
+	return &unixLockHandle{pls, ple, stat.Ino, ple.shared}, nil
 }
 
-type posixLockHandle struct {
-	pls    *posixLockState
-	ple    *posixLockEntry
+type unixLockHandle struct {
+	pls    *unixLockState
+	ple    *unixLockEntry
 	ino    uint64
 	shared bool
 }
 
-func (l *posixLockHandle) Unlock() error {
+func (l *unixLockHandle) Unlock() error {
 	if l.pls == nil {
 		panic("lock is not held")
 	}
@@ -173,7 +149,14 @@ func (l *posixLockHandle) Unlock() error {
 	return nil
 }
 
-func (l *posixLockHandle) LockFile() *os.File { return l.ple.file }
+func (l *unixLockHandle) LockFile() *os.File { return l.ple.file }
+
+func (l *unixLockHandle) PreserveExec() error {
+	if _, _, err := unix.Syscall(unix.SYS_FCNTL, l.LockFile().Fd(), unix.F_SETFD, 0); err != unix.Errno(0x0) {
+		return err
+	}
+	return nil
+}
 
 func getOrCreateLockFile(path string, content []byte) (*os.File, error) {
 	const mode = 0640 | os.ModeTemporary

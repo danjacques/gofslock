@@ -5,6 +5,7 @@
 package fslock
 
 import (
+	"bufio"
 	"bytes"
 	"flag"
 	"fmt"
@@ -19,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 var logSubprocess = flag.Bool("test.logsubprocess", false, "Enable verbose subprocess logging.")
@@ -154,8 +157,10 @@ func TestMultiProcessing(t *testing.T) {
 		return
 	}
 
-	// TODO: Replace with os.Executable for Go 1.8.
-	executable := os.Args[0]
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal("failed to find current executable binary")
+	}
 
 	// This pipe will be used to signal that the processes should start the test.
 	signalR, signalW, err := os.Pipe()
@@ -564,8 +569,10 @@ func TestSharedMultiProcessing(t *testing.T) {
 		return
 	}
 
-	// TODO: Replace with os.Executable for Go 1.8.
-	executable := os.Args[0]
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal("failed to find current executable binary")
+	}
 
 	withTempDir(t, "shared_multiprocessing", func(tdir string) {
 		const count = 128
@@ -706,6 +713,73 @@ func testSharedMultiProcessingSubprocess(name, lock, dir string) int {
 
 	logf("%s: terminating successfully", name)
 	return 0
+}
+
+func TestExec(t *testing.T) {
+	t.Parallel()
+
+	const (
+		envSentinel  = "_FSLOCK_TEST_EXEC_LOCK"
+		envCheckLock = "_FSLOCK_TEST_EXEC_CHECK"
+	)
+
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal("failed to find current executable binary")
+	}
+
+	// Are we a testing process instance, or the main process?
+	if path := os.Getenv(envSentinel); path != "" {
+		if os.Getenv(envCheckLock) == "" {
+			l, err := Lock(path)
+			if err != nil {
+				t.Fatalf("failed lock file: %v", err)
+			}
+			if err := l.PreserveExec(); err != nil {
+				t.Fatalf("failed preserve lock: %v", err)
+			}
+			args := []string{"-test.run", "^TestExec$"}
+			env := append(os.Environ(), fmt.Sprintf("%s=%s", envCheckLock, "1"))
+			if err := unix.Exec(executable, args, env); err != nil {
+				t.Fatalf("failed to exec self: %v", err)
+			}
+			t.Fatal("unreachable")
+		}
+
+		if _, err := Lock(path); err != ErrLockHeld {
+			t.Fatal("failed to hold lock after exec")
+		}
+
+		return
+	}
+
+	tmp, err := os.CreateTemp("", "FSLOCK")
+	if err != nil {
+		t.Fatalf("failed to create temp lock file")
+	}
+	defer os.Remove(tmp.Name())
+
+	cmd := exec.Command(executable, "-test.run", "^TestExec$")
+	cmd.Env = append(
+		os.Environ(),
+		fmt.Sprintf("%s=%s", envSentinel, tmp.Name()),
+	)
+	stdout := bytes.NewBuffer(nil)
+	cmd.Stdout = stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if _, ok := err.(*exec.ExitError); !ok {
+			t.Fatalf("failed to run subprocess: %v", err)
+		}
+
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			if line := scanner.Text(); strings.HasPrefix(line, "    ") {
+				t.Log(strings.TrimSpace(line))
+			}
+		}
+		t.Fail()
+	}
 }
 
 func scanForFiles(dir, prefix string) (int, error) {
