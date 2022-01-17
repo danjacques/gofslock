@@ -12,14 +12,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// flock_lock is an implementation of lock using POSIX locks via flock().
+// flockLock is an implementation of lock using POSIX locks via flock().
 //
 // flock() locks are released when *any* file handle to the locked file is
 // closed. To address this, we hold actual file handles globally. Attempts to
 // acquire a file lock first check to see if there is already a global entity
 // holding the lock (fail), then attempt to acquire the lock at a filesystem
 // level.
-func flock_lock(l *L, fd *os.File) error {
+func flockLock(l *L, fd *os.File) error {
 	// Use "flock()" to get a lock on the file.
 	//
 	lockcmd := unix.F_SETLK

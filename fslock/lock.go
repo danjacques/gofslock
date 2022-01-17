@@ -36,12 +36,13 @@ type Handle interface {
 	// unspecified.
 	LockFile() *os.File
 
-	// PreserveExec preserve the lock across execve syscall.
+	// PreserveExec preserves the lock across execve syscall.
 	//
 	// The lock will be held even after call execve. It is not possible to
-	// acquire a handle for the lock unless manually pass the fd as an argument.
+	// acquire a handle for the lock unless manually passing the fd as an
+	// argument.
 	//
-	// On windows, the behaviour is not promised unless CreateProcess with
+	// On Windows, the behaviour is not promised unless CreateProcess with
 	// bInheritHandles.
 	PreserveExec() error
 }

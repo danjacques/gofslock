@@ -12,7 +12,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// flock_lock is an implementation of lock using Linux flock().
+// flockLock is an implementation of lock using Linux flock().
 //
 // A process may only hold one type of lock (shared or exclusive) on a file.
 // Subsequent flock() calls on an already locked file will convert an existing
@@ -25,7 +25,7 @@ import (
 // is not the last thread of the process, the lock will be released even without
 // FD_CLOEXEC flag.
 // See also: crbug.com/1276120
-func flock_lock(l *L, fd *os.File) error {
+func flockLock(l *L, fd *os.File) error {
 	// Use "flock()" to get a lock on the file.
 	//
 	// LOCK_EX: Exclusive lock

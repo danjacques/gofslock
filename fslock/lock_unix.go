@@ -42,7 +42,7 @@ type unixLockState struct {
 	held map[uint64]*unixLockEntry
 }
 
-func (pls *unixLockState) lockImpl(l *L) (Handle, error) {
+func (uls *unixLockState) lockImpl(l *L) (Handle, error) {
 	fd, err := getOrCreateLockFile(l.Path, l.Content)
 	if err != nil {
 		return nil, err
@@ -61,95 +61,95 @@ func (pls *unixLockState) lockImpl(l *L) (Handle, error) {
 	stat := st.Sys().(*syscall.Stat_t)
 
 	// Do we already have a lock on this file?
-	pls.RLock()
-	ple := pls.held[stat.Ino]
-	pls.RUnlock()
+	uls.RLock()
+	ule := uls.held[stat.Ino]
+	uls.RUnlock()
 
-	if ple != nil {
-		// If we are requesting an exclusive lock, or if "ple" is held exclusively,
+	if ule != nil {
+		// If we are requesting an exclusive lock, or if "ule" is held exclusively,
 		// then deny the request.
-		if !(l.Shared && ple.shared) {
+		if !(l.Shared && ule.shared) {
 			return nil, ErrLockHeld
 		}
 	}
 
 	// Attempt to register the lock.
-	pls.Lock()
-	defer pls.Unlock()
+	uls.Lock()
+	defer uls.Unlock()
 
 	// Check again, with write lock held.
-	if ple := pls.held[stat.Ino]; ple != nil {
-		if !(l.Shared && ple.shared) {
+	if ule := uls.held[stat.Ino]; ule != nil {
+		if !(l.Shared && ule.shared) {
 			return nil, ErrLockHeld
 		}
 
-		// We're requesting a shared lock, and "ple" is shared, so we can grant a
+		// We're requesting a shared lock, and "ule" is shared, so we can grant a
 		// handle.
-		ple.sharedCount++
-		return &unixLockHandle{pls, ple, stat.Ino, true}, nil
+		ule.sharedCount++
+		return &unixLockHandle{uls, ule, stat.Ino, true}, nil
 	}
 
-	// Call platform dependent flock_lock() to lock the file at a filesystem
+	// Call platform dependent flockLock() to lock the file at a filesystem
 	// level.
-	if err := flock_lock(l, fd); err != nil {
+	if err := flockLock(l, fd); err != nil {
 		return nil, err
 	}
 
-	if pls.held == nil {
-		pls.held = make(map[uint64]*unixLockEntry)
+	if uls.held == nil {
+		uls.held = make(map[uint64]*unixLockEntry)
 	}
 
-	ple = &unixLockEntry{
+	ule = &unixLockEntry{
 		file:        fd,
 		shared:      l.Shared,
 		sharedCount: 1, // Ignored for exclusive.
 	}
-	pls.held[stat.Ino] = ple
+	uls.held[stat.Ino] = ule
 	fd = nil // Don't Close in defer().
-	return &unixLockHandle{pls, ple, stat.Ino, ple.shared}, nil
+	return &unixLockHandle{uls, ule, stat.Ino, ule.shared}, nil
 }
 
 type unixLockHandle struct {
-	pls    *unixLockState
-	ple    *unixLockEntry
+	uls    *unixLockState
+	ule    *unixLockEntry
 	ino    uint64
 	shared bool
 }
 
 func (l *unixLockHandle) Unlock() error {
-	if l.pls == nil {
+	if l.uls == nil {
 		panic("lock is not held")
 	}
 
-	l.pls.Lock()
-	defer l.pls.Unlock()
+	l.uls.Lock()
+	defer l.uls.Unlock()
 
-	ple := l.pls.held[l.ino]
-	if ple == nil {
+	ule := l.uls.held[l.ino]
+	if ule == nil {
 		panic(fmt.Errorf("lock for inode %d is not held", l.ino))
 	}
 	if l.shared {
-		if !ple.shared {
+		if !ule.shared {
 			panic(fmt.Errorf("lock for inode %d is not shared, but handle is shared", l.ino))
 		}
-		ple.sharedCount--
+		ule.sharedCount--
 	}
 
-	if !ple.shared || ple.sharedCount == 0 {
+	if !ule.shared || ule.sharedCount == 0 {
 		// Last holder of the lock. Clean it up and unregister.
-		if err := ple.file.Close(); err != nil {
+		if err := ule.file.Close(); err != nil {
 			return err
 		}
-		delete(l.pls.held, l.ino)
+		delete(l.uls.held, l.ino)
 	}
 
-	// Clear the lock's "pls" field so that future calls to Unlock will fail
+	// Clear the lock's "uls" field so that future calls to Unlock will fail
 	// immediately.
-	l.pls = nil
+	l.uls = nil
 	return nil
 }
 
-func (l *unixLockHandle) LockFile() *os.File { return l.ple.file }
+func (l *unixLockHandle) LockFile() *os.File { return l.ule.file }
 
 func (l *unixLockHandle) PreserveExec() error {
 	if _, _, err := unix.Syscall(unix.SYS_FCNTL, l.LockFile().Fd(), unix.F_SETFD, 0); err != unix.Errno(0x0) {
