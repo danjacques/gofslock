@@ -1,34 +1,28 @@
-// Copyright 2017 by Dan Jacques. All rights reserved.
+// Copyright 2022 by Dan Jacques. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-// +build darwin linux freebsd netbsd openbsd android solaris aix
+//go:build !windows
 
 package fslock
 
 import (
 	"fmt"
-	"golang.org/x/sys/unix"
 	"os"
 	"sync"
 	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
-var globalPosixLockState posixLockState
-
-// lockImpl is an implementation of lock using POSIX locks via flock().
-//
-// flock() locks are released when *any* file handle to the locked file is
-// closed. To address this, we hold actual file handles globally. Attempts to
-// acquire a file lock first check to see if there is already a global entity
-// holding the lock (fail), then attempt to acquire the lock at a filesystem
-// level.
 func lockImpl(l *L) (Handle, error) {
-	return globalPosixLockState.lockImpl(l)
+	return globalUnixLockState.lockImpl(l)
 }
 
-// posixLockEntry is an entry in a posixLockState represneting a single inode.
-type posixLockEntry struct {
+var globalUnixLockState unixLockState
+
+// unixLockEntry is an entry in a unixLockState represneting a single inode.
+type unixLockEntry struct {
 	// file is the underlying open file descriptor.
 	file *os.File
 
@@ -39,16 +33,16 @@ type posixLockEntry struct {
 	sharedCount uint64
 }
 
-// posixLockState maintains an internal state of filesystem locks.
+// unixLockState maintains an internal state of filesystem locks.
 //
 // For runtime usage, this is maintained in the global variable,
-// globalPosixLockState.
-type posixLockState struct {
+// globalUnixLockState.
+type unixLockState struct {
 	sync.RWMutex
-	held map[uint64]*posixLockEntry
+	held map[uint64]*unixLockEntry
 }
 
-func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
+func (uls *unixLockState) lockImpl(l *L) (Handle, error) {
 	fd, err := getOrCreateLockFile(l.Path, l.Content)
 	if err != nil {
 		return nil, err
@@ -67,113 +61,102 @@ func (pls *posixLockState) lockImpl(l *L) (Handle, error) {
 	stat := st.Sys().(*syscall.Stat_t)
 
 	// Do we already have a lock on this file?
-	pls.RLock()
-	ple := pls.held[stat.Ino]
-	pls.RUnlock()
+	uls.RLock()
+	ule := uls.held[stat.Ino]
+	uls.RUnlock()
 
-	if ple != nil {
-		// If we are requesting an exclusive lock, or if "ple" is held exclusively,
+	if ule != nil {
+		// If we are requesting an exclusive lock, or if "ule" is held exclusively,
 		// then deny the request.
-		if !(l.Shared && ple.shared) {
+		if !(l.Shared && ule.shared) {
 			return nil, ErrLockHeld
 		}
 	}
 
 	// Attempt to register the lock.
-	pls.Lock()
-	defer pls.Unlock()
+	uls.Lock()
+	defer uls.Unlock()
 
 	// Check again, with write lock held.
-	if ple := pls.held[stat.Ino]; ple != nil {
-		if !(l.Shared && ple.shared) {
+	if ule := uls.held[stat.Ino]; ule != nil {
+		if !(l.Shared && ule.shared) {
 			return nil, ErrLockHeld
 		}
 
-		// We're requesting a shared lock, and "ple" is shared, so we can grant a
+		// We're requesting a shared lock, and "ule" is shared, so we can grant a
 		// handle.
-		ple.sharedCount++
-		return &posixLockHandle{pls, ple, stat.Ino, true}, nil
+		ule.sharedCount++
+		return &unixLockHandle{uls, ule, stat.Ino, true}, nil
 	}
 
-	// Use "flock()" to get a lock on the file.
-	//
-	lockcmd := unix.F_SETLK
-	lockstr := unix.Flock_t{
-		Type: unix.F_WRLCK, Start: 0, Len: 0, Whence: 1,
-	}
-
-	if l.Shared {
-		lockstr.Type = unix.F_RDLCK
-	}
-
-	if err := unix.FcntlFlock(fd.Fd(), lockcmd, &lockstr); err != nil {
-		if errno, ok := err.(syscall.Errno); ok {
-			switch errno {
-			case syscall.EWOULDBLOCK:
-				// Someone else holds the lock on this file.
-				return nil, ErrLockHeld
-			default:
-				return nil, err
-			}
-		}
+	// Call platform dependent flockLock() to lock the file at a filesystem
+	// level.
+	if err := flockLock(l, fd); err != nil {
 		return nil, err
 	}
 
-	if pls.held == nil {
-		pls.held = make(map[uint64]*posixLockEntry)
+	if uls.held == nil {
+		uls.held = make(map[uint64]*unixLockEntry)
 	}
 
-	ple = &posixLockEntry{
+	ule = &unixLockEntry{
 		file:        fd,
 		shared:      l.Shared,
 		sharedCount: 1, // Ignored for exclusive.
 	}
-	pls.held[stat.Ino] = ple
+	uls.held[stat.Ino] = ule
 	fd = nil // Don't Close in defer().
-	return &posixLockHandle{pls, ple, stat.Ino, ple.shared}, nil
+	return &unixLockHandle{uls, ule, stat.Ino, ule.shared}, nil
 }
 
-type posixLockHandle struct {
-	pls    *posixLockState
-	ple    *posixLockEntry
+type unixLockHandle struct {
+	uls    *unixLockState
+	ule    *unixLockEntry
 	ino    uint64
 	shared bool
 }
 
-func (l *posixLockHandle) Unlock() error {
-	if l.pls == nil {
+func (l *unixLockHandle) Unlock() error {
+	if l.uls == nil {
 		panic("lock is not held")
 	}
 
-	l.pls.Lock()
-	defer l.pls.Unlock()
+	l.uls.Lock()
+	defer l.uls.Unlock()
 
-	ple := l.pls.held[l.ino]
-	if ple == nil {
+	ule := l.uls.held[l.ino]
+	if ule == nil {
 		panic(fmt.Errorf("lock for inode %d is not held", l.ino))
 	}
 	if l.shared {
-		if !ple.shared {
+		if !ule.shared {
 			panic(fmt.Errorf("lock for inode %d is not shared, but handle is shared", l.ino))
 		}
-		ple.sharedCount--
+		ule.sharedCount--
 	}
 
-	if !ple.shared || ple.sharedCount == 0 {
+	if !ule.shared || ule.sharedCount == 0 {
 		// Last holder of the lock. Clean it up and unregister.
-		if err := ple.file.Close(); err != nil {
+		if err := ule.file.Close(); err != nil {
 			return err
 		}
-		delete(l.pls.held, l.ino)
+		delete(l.uls.held, l.ino)
 	}
 
-	// Clear the lock's "pls" field so that future calls to Unlock will fail
+	// Clear the lock's "uls" field so that future calls to Unlock will fail
 	// immediately.
-	l.pls = nil
+	l.uls = nil
 	return nil
 }
 
-func (l *posixLockHandle) LockFile() *os.File { return l.ple.file }
+func (l *unixLockHandle) LockFile() *os.File { return l.ule.file }
+
+func (l *unixLockHandle) PreserveExec() error {
+	if _, _, err := unix.Syscall(unix.SYS_FCNTL, l.LockFile().Fd(), unix.F_SETFD, 0); err != unix.Errno(0x0) {
+		return err
+	}
+	return nil
+}
 
 func getOrCreateLockFile(path string, content []byte) (*os.File, error) {
 	const mode = 0640 | os.ModeTemporary

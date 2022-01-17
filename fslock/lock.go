@@ -35,6 +35,16 @@ type Handle interface {
 	// closed with Unlock, the file's state is implementation-specific and
 	// unspecified.
 	LockFile() *os.File
+
+	// PreserveExec preserves the lock across execve syscall.
+	//
+	// The lock will be held even after call execve. It is not possible to
+	// acquire a handle for the lock unless manually passing the fd as an
+	// argument.
+	//
+	// On Windows, the behaviour is not promised unless CreateProcess with
+	// bInheritHandles.
+	PreserveExec() error
 }
 
 // Blocker is used for the Delay field in a Lock.

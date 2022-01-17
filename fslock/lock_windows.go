@@ -7,11 +7,12 @@ package fslock
 import (
 	"os"
 	"runtime"
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-const errno_ERROR_SHARING_VIOLATION syscall.Errno = 32
+const errno_ERROR_SHARING_VIOLATION windows.Errno = 32
 
 func lockImpl(l *L) (Handle, error) {
 	fd, created, err := getOrCreateFile(l.Path, l.Shared)
@@ -46,44 +47,51 @@ func (h *winLockHandle) Unlock() error {
 
 func (h *winLockHandle) LockFile() *os.File { return h.fd }
 
+func (h *winLockHandle) PreserveExec() error {
+	if err := windows.SetHandleInformation(windows.Handle(h.LockFile().Fd()), windows.HANDLE_FLAG_INHERIT, 1); err != nil {
+		return err
+	}
+	return nil
+}
+
 func getOrCreateFile(path string, shared bool) (*os.File, bool, error) {
-	mod := syscall.NewLazyDLL("kernel32.dll")
+	mod := windows.NewLazyDLL("kernel32.dll")
 	proc := mod.NewProc("CreateFileW")
 
-	pathp, err := syscall.UTF16PtrFromString(path)
+	pathp, err := windows.UTF16PtrFromString(path)
 	if err != nil {
 		return nil, false, err
 	}
 
 	dwShareMode := uint32(0) // Exclusive (no sharing)
 	if shared {
-		dwShareMode = syscall.FILE_SHARE_READ | syscall.FILE_SHARE_WRITE
+		dwShareMode = windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE
 	}
 
 	a, _, err := proc.Call(
 		uintptr(unsafe.Pointer(pathp)),
-		uintptr(syscall.GENERIC_READ|syscall.GENERIC_WRITE),
+		uintptr(windows.GENERIC_READ|windows.GENERIC_WRITE),
 		uintptr(dwShareMode),
 		uintptr(0), // No security attributes.
-		uintptr(syscall.OPEN_ALWAYS),
-		uintptr(syscall.FILE_ATTRIBUTE_NORMAL),
+		uintptr(windows.OPEN_ALWAYS),
+		uintptr(windows.FILE_ATTRIBUTE_NORMAL),
 		0, // No template file.
 	)
 	runtime.KeepAlive(pathp)
 
-	fd := syscall.Handle(a)
-	errno := err.(syscall.Errno)
+	fd := windows.Handle(a)
+	errno := err.(windows.Errno)
 	switch errno {
 	case 0:
 		return os.NewFile(uintptr(fd), path), true, nil
-	case syscall.ERROR_ALREADY_EXISTS:
+	case windows.ERROR_ALREADY_EXISTS:
 		// Opened the file, but did not create it.
 		return os.NewFile(uintptr(fd), path), false, nil
 	case errno_ERROR_SHARING_VIOLATION:
 		// We could not open the file because someone else is holding it.
 		return nil, false, ErrLockHeld
 	default:
-		syscall.CloseHandle(fd)
+		windows.CloseHandle(fd)
 		return nil, false, err
 	}
 }
