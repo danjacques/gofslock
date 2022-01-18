@@ -3,6 +3,7 @@
 // license that can be found in the LICENSE file.
 
 //go:build linux || android
+// +build linux android
 
 package fslock
 
