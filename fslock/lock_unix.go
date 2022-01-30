@@ -11,9 +11,10 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"syscall"
 
-	"golang.org/x/sys/unix"
+	// Use legacy syscall package because AIX doesn't have syscall defined
+	// in golang.org/x/sys/unix.
+	"syscall"
 )
 
 func lockImpl(l *L) (Handle, error) {
@@ -153,7 +154,7 @@ func (l *unixLockHandle) Unlock() error {
 func (l *unixLockHandle) LockFile() *os.File { return l.ule.file }
 
 func (l *unixLockHandle) PreserveExec() error {
-	if _, _, err := unix.Syscall(unix.SYS_FCNTL, l.LockFile().Fd(), unix.F_SETFD, 0); err != unix.Errno(0x0) {
+	if _, _, err := syscall.Syscall(syscall.SYS_FCNTL, l.LockFile().Fd(), syscall.F_SETFD, 0); err != syscall.Errno(0x0) {
 		return err
 	}
 	return nil
