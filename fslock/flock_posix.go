@@ -2,8 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-//go:build darwin || freebsd || netbsd || openbsd || solaris || aix
-// +build darwin freebsd netbsd openbsd solaris aix
+//go:build darwin || freebsd || netbsd || openbsd || solaris || aix || dragonfly || (unix && !linux && !android)
+// +build darwin freebsd netbsd openbsd solaris aix dragonfly unix,!linux,!android
 
 package fslock
 
